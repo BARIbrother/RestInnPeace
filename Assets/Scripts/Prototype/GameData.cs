@@ -34,12 +34,18 @@ public enum TargetRule
     AnyHuman
 }
 
-// 낮은 이 순서로만 진행하며 이전 단계로 돌아갈 수 없다.
+// 낮 2 · 밤 2. 이전 단계로 돌아갈 수 없다. (처형은 회의 중 선택)
 public enum DayPhase
 {
-    Gather,
-    Talk,
-    Prepare
+    Recruit,
+    Meeting,
+    NightPrep
+}
+
+// 주인이 보유해 회의에서 제시·반박에 쓰는 단서.
+public enum ClueKind
+{
+    Fur
 }
 
 public class SpeciesDefinition
@@ -295,12 +301,23 @@ public static class GameData
     {
         switch (phase)
         {
-            case DayPhase.Gather:
-                return "소집·조사";
-            case DayPhase.Talk:
-                return "대화·심문";
+            case DayPhase.Recruit:
+                return "손님 모집";
+            case DayPhase.Meeting:
+                return "회의";
             default:
-                return "처형·밤 준비";
+                return "밤 준비";
+        }
+    }
+
+    public static string GetClueKindName(ClueKind kind)
+    {
+        switch (kind)
+        {
+            case ClueKind.Fur:
+                return "[털]";
+            default:
+                return "단서";
         }
     }
 }
@@ -324,7 +341,16 @@ public static class ChatText
     // {0}: [문 앞을 서성임] 대상 방 주인
     public const string LurkScream = "어제는 {0} 방문 앞에 좀 서 있었는데, 갑자기 비명을 지르더라니까.. 깜짝 놀랐어.";
     public const string HeardNothing = "어젯밤..? 글쎄, 아무 소리도 안 들리던데.";
-    public const string SurvivedAttack = "죽을 뻔 했다고!! 어떤 놈이 내 방 문을 열고 쳐들어왔어! 다행히 목숨은 건졌지만.. 불안해서 미칠 것 같아..";}
+    public const string SurvivedAttack = "죽을 뻔 했다고!! 어떤 놈이 내 방 문을 열고 쳐들어왔어! 다행히 목숨은 건졌지만.. 불안해서 미칠 것 같아..";
+
+    // 회의 주장. 지목만. {0}=speaker, {1}=target / H1·털 제시는 {0}=target
+    public const string ClaimRoamer = "{0}: 어젯밤에 말이죠… {1}이(가) 복도를 돌아다니는 걸 봤어요.";
+    public const string ClaimHostFalse = "(주인) {0}… 아무래도 수상합니다. 증거도 있어요.";
+    // {0}=target. 보유 [털] 단서를 제시하며 지목
+    public const string ClaimFurPresent = "(주인) 이 털을 보십시오. {0}의 소행이 분명합니다.";
+    // 어젯밤 일. 자기 방 [털] (탈모로 직접 떨어뜨린 경우는 말하지 않음)
+    public const string TalkFoundFur = "제 방바닥에… 털이 떨어져 있었어요. 누가 들어온 거 아닌가요?";
+}
 
 public static class GameBalance
 {
@@ -337,7 +363,7 @@ public static class GameBalance
     public const int MaxMonsters = 1;
     public const int OwnerRoomLocks = 2;
     public const int DailyInterrogations = 1;
-    public const int StartTrust = 5;
+    public const int StartTrust = 8;
     public const int InspectCost = 1;
     public const int CallCost = 1;
     public const int MoveCost = 1;
@@ -351,4 +377,13 @@ public static class GameBalance
     public const int InformantFirstDay = 2;
     public const int InformantInterval = 2;
     public const float StrongSurviveChance = 0.5f;
+    // 살인마 피벗: 의심·회의·처형 (임시값)
+    public const int MaxSuspicion = 5;
+    public const int RejectDemandPenalty = 3;
+    // 괴물 처형 시 순증가분. 처형 비용을 쓴 뒤 ExecuteCost+이 값만큼 돌려 순 +MonsterExecuteTrustGain이 된다.
+    public const int MonsterExecuteTrustGain = 5;
+    public const int DailyRefutes = 3;
+    // 거짓 증거: 새 주장으로 올리기 / 반박에 쓰기 (임시)
+    public const int FalseClaimCost = 2;
+    public const int RefuteCost = 1;
 }

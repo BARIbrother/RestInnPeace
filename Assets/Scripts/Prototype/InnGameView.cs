@@ -9,7 +9,8 @@ public class InnGameView : MonoBehaviour
     {
         None,
         NightLog,
-        Report
+        Report,
+        ExecutionDemand
     }
 
     enum GuideCategory
@@ -58,6 +59,7 @@ public class InnGameView : MonoBehaviour
     float notesHeight;
     Vector2 guideScroll;
     Vector2 memoScroll;
+    Vector2 resultScroll;
     bool showMemoTab;
     GuideCategory guideCategory;
     // 태그를 클릭해 연 도감 설명 페이지. null이면 분류 목록을 보여 준다.
@@ -140,6 +142,10 @@ public class InnGameView : MonoBehaviour
         {
             DrawReport();
         }
+        else if (popup == Popup.ExecutionDemand)
+        {
+            DrawExecutionDemand();
+        }
 
         DrawTooltip();
 
@@ -198,7 +204,7 @@ public class InnGameView : MonoBehaviour
             }
             else if (popup == Popup.Report)
             {
-                popup = Popup.None;
+                CloseReport();
             }
             else if (game.CanEndDay)
             {
@@ -238,6 +244,10 @@ public class InnGameView : MonoBehaviour
         movingFrom = null;
         interrogating = false;
         executeConfirm = null;
+        if (game.ExecutionDemand != null)
+        {
+            popup = Popup.ExecutionDemand;
+        }
     }
 
     void AdvanceNightLog()
@@ -249,6 +259,11 @@ public class InnGameView : MonoBehaviour
         }
 
         popup = game.Result == GameResult.Playing ? Popup.Report : Popup.None;
+    }
+
+    void CloseReport()
+    {
+        popup = game.ExecutionDemand != null ? Popup.ExecutionDemand : Popup.None;
     }
 
     bool Button(Rect rect, string text, bool enabled = true)
@@ -532,20 +547,23 @@ public class InnGameView : MonoBehaviour
     void DrawTopBar()
     {
         GUI.Box(new Rect(0, 0, ReferenceWidth, 70), GUIContent.none);
-        string status = $"{game.Day}일차 / {GameBalance.TargetDay}일 ({GameData.GetPhaseName(game.Phase)})     " +
+        string status = $"{game.Day}일차 ({GameData.GetPhaseName(game.Phase)})     " +
                         $"신뢰 {game.Trust}     " +
-                        $"집중 심문 {game.Interrogations}/{GameBalance.DailyInterrogations}     " +
+                        $"털 단서 {game.FurClueCount}     " +
+                        (game.Phase == DayPhase.Meeting ? $"반박 {game.RefutesLeft}/{GameBalance.DailyRefutes}     " : "") +
                         $"주인 방 자물쇠 {game.OwnerLocks}/{GameBalance.OwnerRoomLocks}";
         TaggedLabel(new Rect(20, 18, 1520, 40), status, labelStyle);
 
-        if (game.Phase == DayPhase.Prepare)
+        if (game.Phase == DayPhase.NightPrep)
         {
-            if (Button(new Rect(1560, 10, 340, 50), "밤으로 (Space)", game.CanEndDay))
+            if (Button(new Rect(1560, 10, 340, 50), "밤 진행 (Space)", game.CanEndDay))
             {
                 EndDay();
             }
         }
-        else if (Button(new Rect(1560, 10, 340, 50), $"다음: {GameData.GetPhaseName(game.Phase + 1)} (Space)", game.CanAdvancePhase))
+        else if (Button(new Rect(1560, 10, 340, 50),
+                     game.Phase == DayPhase.Meeting ? "회의 종료 (Space)" : $"다음: {GameData.GetPhaseName(game.Phase + 1)} (Space)",
+                     game.CanAdvancePhase))
         {
             AdvancePhase();
         }
@@ -599,7 +617,7 @@ public class InnGameView : MonoBehaviour
             }
 
             GUI.backgroundColor = room == selectedRoom ? Color.yellow : new Color(0.55f, 0.85f, 1f);
-            if (Button(rect, $"{room.Guest.DisplayName} ({room.DisplayName})"))
+            if (Button(rect, $"{room.Guest.DisplayName} 의심{room.Guest.Suspicion}/{GameBalance.MaxSuspicion}\n({room.DisplayName})"))
             {
                 OnRoomClicked(room);
             }
@@ -680,10 +698,16 @@ public class InnGameView : MonoBehaviour
         else
         {
             text.AppendLine(room.Guest.DisplayName);
+            text.AppendLine($"의심 {room.Guest.Suspicion}/{GameBalance.MaxSuspicion}");
             if (room.Guest.TraitKnown)
             {
                 text.AppendLine($"특성: {GameData.Traits.First(t => t.Id == room.Guest.Trait).Name}");
             }
+        }
+
+        if (room.HasFur)
+        {
+            text.AppendLine("[털]");
         }
 
         if (room.Installed.Count > 0)
@@ -728,8 +752,10 @@ public class InnGameView : MonoBehaviour
 
         GUI.Label(new Rect(x, y, area.width - 20, 34), $"신뢰 {game.Trust}", titleStyle);
         y += 38;
-        string costs = $"조사·부르기·교환 {GameBalance.InspectCost}\n" +
-                       $"특성 검증 {GameBalance.VerifyCost} / 처형 {GameBalance.ExecuteCost}\n" +
+        string costs = $"낮: 모집→회의(처형 선택) / 밤: 준비→괴물\n" +
+                       $"부르기 무료 / 조사 {GameBalance.InspectCost} (털→단서)\n" +
+                       $"털 단서 {game.FurClueCount} / 거짓 주장 {GameBalance.FalseClaimCost}\n" +
+                       $"반박=단서 1장 (하루 {GameBalance.DailyRefutes}회) / 처형 {GameBalance.ExecuteCost}\n" +
                        string.Join("\n", GameData.Facilities.Select(f => $"{f.Name} {f.Price}"));
         TaggedLabel(new Rect(x, y, area.width - 20, area.yMax - y - 5), costs, smallStyle);
     }
@@ -767,10 +793,19 @@ public class InnGameView : MonoBehaviour
             return;
         }
 
+        if (game.Phase == DayPhase.Meeting)
+        {
+            DrawMeetingPanel(area, x, y);
+            return;
+        }
+
         if (selectedRoom == null)
         {
-            GUI.Label(new Rect(x, y, 620, 200), "방이나 로비의 손님을 클릭해 선택하세요.\n낮은 세 단계로 진행되며 이전 단계로 돌아갈 수 없습니다.\n" +
-                                                "1. 소집·조사: 로비로 부르기, 방 조사\n2. 대화·심문: 로비 손님과 대화(하루 1회), 집중 심문\n3. 처형·밤 준비: 처형, 방 교환, 설비 설치", labelStyle);
+            GUI.Label(new Rect(x, y, 620, 220),
+                "방이나 로비의 손님을 클릭해 선택하세요.\n" +
+                "낮1 모집: 부르기·조사(털은 단서로 수거)\n" +
+                "낮2 회의: 주장·반박(단서)·털 제시·처형(선택)\n" +
+                "밤1 준비: 설비 + 털 제거/뿌리기 예약 → 밤 진행", labelStyle);
             return;
         }
 
@@ -786,43 +821,33 @@ public class InnGameView : MonoBehaviour
                 game.Inspect(room);
             }
 
+            DrawNightRoomActions(room, x, y + 50);
             return;
         }
+
+        GUI.Label(new Rect(x, y, 620, 30),
+            $"{room.Guest.DisplayName} · 의심 {room.Guest.Suspicion}/{GameBalance.MaxSuspicion}", labelStyle);
+        y += 35;
 
         float contentTop = y;
         switch (game.Phase)
         {
-            case DayPhase.Gather:
-                DrawGatherActions(room, x, y);
+            case DayPhase.Recruit:
+                DrawRecruitActions(room, x, y);
                 break;
-            case DayPhase.Talk:
-                DrawTalkActions(room, x, y);
-                break;
-            default:
-                if (DrawPrepareActions(room, x, y))
-                {
-                    return;
-                }
+            case DayPhase.NightPrep:
+                DrawInstallActions(room, x, y);
+                DrawReserveActions(room, x, y + 50);
                 break;
         }
 
         y = contentTop + 100;
-        if (movingFrom == room)
+        if (!room.Guest.IsOut && game.Phase == DayPhase.Recruit)
         {
-            GUI.Label(new Rect(x, y, 620, 30), "옮길 방을 클릭하세요. 손님이 있으면 서로 방을 바꿉니다. (Esc 취소)", smallStyle);
-        }
-        else if (!room.Guest.IsOut)
-        {
-            GUI.Label(new Rect(x, y, 620, 30), "방에 틀어박혀 있다. 조사·대화·심문은 소집·조사 단계에 로비로 불러야 할 수 있다.", smallStyle);
+            GUI.Label(new Rect(x, y, 620, 30), "방에 있다. 조사하려면 로비로 부르거나 빈 방일 때 조사한다.", smallStyle);
         }
 
         y += 35;
-        if (game.Phase == DayPhase.Talk && interrogating && game.CanInterrogate(room))
-        {
-            DrawInterrogation(room, x, y);
-            return;
-        }
-
         GUI.Label(new Rect(x, y + 15, 70, 30), "메모", labelStyle);
         room.Guest.Memo = TextArea(new Rect(x + 70, y, PanelWidth - 100, 60), room.Guest.Memo);
         y += 70;
@@ -845,9 +870,103 @@ public class InnGameView : MonoBehaviour
         GUI.EndScrollView();
     }
 
-    void DrawGatherActions(Room room, float x, float y)
+    Vector2 meetingScroll;
+
+    void DrawMeetingPanel(Rect area, float x, float y)
     {
-        if (Button(new Rect(x, y, 305, 40), $"로비로 부르기 ({GameBalance.CallCost})", game.CanLureOut(room)))
+        GUI.Label(new Rect(x, y, 620, 34),
+            $"회의 · 반박 {game.RefutesLeft}/{GameBalance.DailyRefutes} · 단서 {game.HeldClues.Count}", titleStyle);
+        y += 40;
+        GUI.Label(new Rect(x, y, 620, 44),
+            "주장 자동 채택→의심+1. 반박·털 제시는 단서 소비. 처형은 선택.", smallStyle);
+        y += 48;
+
+        if (selectedRoom?.Guest != null)
+        {
+            Guest guest = selectedRoom.Guest;
+            GUI.Label(new Rect(x, y, 280, 28),
+                $"{guest.DisplayName} · 의심 {guest.Suspicion}/{GameBalance.MaxSuspicion}", smallStyle);
+            if (guest.IsOut && Button(new Rect(x + 290, y, 140, 28), "어젯밤 일", game.CanTalk(selectedRoom)))
+            {
+                game.Talk(selectedRoom);
+            }
+
+            if (Button(new Rect(x + 440, y, 180, 28), $"처형 ({GameBalance.ExecuteCost})", game.CanExecute(selectedRoom)))
+            {
+                if (executeConfirm == guest)
+                {
+                    executeConfirm = null;
+                    game.Execute(selectedRoom);
+                }
+                else
+                {
+                    executeConfirm = guest;
+                }
+            }
+
+            y += 36;
+        }
+        else
+        {
+            GUI.Label(new Rect(x, y, 620, 28), "손님을 골라 대화·처형·지목할 수 있다.", smallStyle);
+            y += 32;
+        }
+
+        GUI.Label(new Rect(x, y, 620, 24),
+            $"거짓 주장({GameBalance.FalseClaimCost}) / 털 제시(단서) 대상:", smallStyle);
+        y += 28;
+        float fx = x;
+        foreach (Room room in game.Rooms.Where(r => r.Guest != null))
+        {
+            if (Button(new Rect(fx, y, 100, 26), $"거짓:{room.Guest.Id}", game.CanAddFalseClaim(room.Guest)))
+            {
+                game.AddFalseClaim(room.Guest);
+            }
+
+            if (Button(new Rect(fx, y + 28, 100, 26), $"털→#{room.Guest.Id}", game.CanPresentFurClaim(room.Guest)))
+            {
+                game.PresentFurClaim(room.Guest);
+            }
+
+            fx += 105;
+            if (fx > area.xMax - 120)
+            {
+                fx = x;
+                y += 58;
+            }
+        }
+
+        y += 64;
+        float listTop = y;
+        float listHeight = area.yMax - listTop - 10;
+        float contentHeight = Mathf.Max(listHeight, game.MeetingClaims.Count * 70f + 10f);
+        meetingScroll = GUI.BeginScrollView(new Rect(x, listTop, PanelWidth - 30, listHeight), meetingScroll,
+            new Rect(0, 0, PanelWidth - 50, contentHeight));
+        float cy = 0;
+        if (game.MeetingClaims.Count == 0)
+        {
+            GUI.Label(new Rect(0, cy, PanelWidth - 60, 40), "올라온 주장이 없다.", smallStyle);
+        }
+
+        foreach (MeetingClaim claim in game.MeetingClaims)
+        {
+            string mark = claim.Refuted ? "[반박됨] " : "";
+            GUI.Label(new Rect(0, cy, PanelWidth - 180, 60), mark + claim.Text, smallStyle);
+            if (!claim.Refuted &&
+                Button(new Rect(PanelWidth - 170, cy + 10, 120, 36), "반박(단서)", game.CanRefute(claim)))
+            {
+                game.RefuteClaim(claim);
+            }
+
+            cy += 70;
+        }
+
+        GUI.EndScrollView();
+    }
+
+    void DrawRecruitActions(Room room, float x, float y)
+    {
+        if (Button(new Rect(x, y, 305, 40), "로비로 부르기", game.CanLureOut(room)))
         {
             game.LureOut(room);
         }
@@ -858,26 +977,13 @@ public class InnGameView : MonoBehaviour
         }
     }
 
-    void DrawTalkActions(Room room, float x, float y)
-    {
-        if (Button(new Rect(x, y, 305, 40), "어젯밤 일", game.CanTalk(room)))
-        {
-            game.Talk(room);
-        }
-
-        y += 50;
-        if (Button(new Rect(x, y, 305, 40), $"집중 심문 (남은 {game.Interrogations}회)", game.CanInterrogate(room) && !interrogating))
-        {
-            interrogating = true;
-            verifying = false;
-        }
-    }
-
-    // 처형으로 손님이 사라지면 true를 돌려 나머지 그리기를 멈춘다.
-    bool DrawPrepareActions(Room room, float x, float y)
+    bool DrawExecuteActions(Room room, float x, float y)
     {
         bool confirming = executeConfirm == room.Guest;
-        if (Button(new Rect(x, y, 305, 40), confirming ? "정말 처형? (다시 클릭)" : $"처형 ({GameBalance.ExecuteCost})", game.CanExecute(room)))
+        string executeLabel = confirming
+            ? "정말 처형? (다시 클릭)"
+            : $"처형 ({GameBalance.ExecuteCost}, 의심 {room.Guest.Suspicion}/{GameBalance.MaxSuspicion})";
+        if (Button(new Rect(x, y, 620, 40), executeLabel, game.CanExecute(room)))
         {
             if (confirming)
             {
@@ -889,12 +995,11 @@ public class InnGameView : MonoBehaviour
             executeConfirm = room.Guest;
         }
 
-        if (Button(new Rect(x + 315, y, 305, 40), $"방 옮기기·교환 ({GameBalance.MoveCost})", game.CanMove(room) && movingFrom == null))
-        {
-            movingFrom = room;
-        }
+        return false;
+    }
 
-        y += 50;
+    void DrawInstallActions(Room room, float x, float y)
+    {
         float buttonX = x;
         foreach (FacilityDefinition facility in GameData.Facilities)
         {
@@ -905,8 +1010,29 @@ public class InnGameView : MonoBehaviour
 
             buttonX += 210;
         }
+    }
 
-        return false;
+    void DrawReserveActions(Room room, float x, float y)
+    {
+        string removeLabel = room.ReserveRemoveFur ? "털 제거 예약됨" : "털 제거 예약";
+        if (Button(new Rect(x, y, 305, 40), removeLabel, game.CanReserveRemoveFur(room)))
+        {
+            game.ReserveRemoveFur(room);
+        }
+
+        string plantLabel = room.ReservePlantFur ? "털 뿌리기 예약됨" : $"털 뿌리기 ({game.FurClueCount})";
+        if (Button(new Rect(x + 315, y, 305, 40), plantLabel, game.CanReservePlantFur(room)))
+        {
+            game.ReservePlantFur(room);
+        }
+    }
+
+    void DrawNightRoomActions(Room room, float x, float y)
+    {
+        if (game.Phase == DayPhase.NightPrep)
+        {
+            DrawReserveActions(room, x, y);
+        }
     }
 
     // 메모·기록 자리에 특성 버튼과 맞히기/검증 전환 버튼을 대신 보여 준다.
@@ -1103,21 +1229,61 @@ public class InnGameView : MonoBehaviour
 
         if (GUI.Button(new Rect(area.x + 275, area.yMax - 70, 250, 50), "확인 (Space)", buttonStyle))
         {
+            CloseReport();
+        }
+    }
+
+    void DrawExecutionDemand()
+    {
+        Rect area = new Rect(560, 220, 800, 560);
+        GUI.Box(area, GUIContent.none);
+        GUI.Box(area, GUIContent.none);
+        Guest demand = game.ExecutionDemand;
+        string name = demand != null ? demand.DisplayName : "?";
+        GUI.Label(new Rect(area.x + 20, area.y + 15, 760, 40), "처형 요구", titleStyle);
+        TaggedLabel(
+            new Rect(area.x + 20, area.y + 70, 760, 300),
+            $"손님들이 {name}의 처형을 요구한다.\n의심 {demand?.Suspicion ?? 0}/{GameBalance.MaxSuspicion}\n\n" +
+            $"수락: 신뢰 {GameBalance.ExecuteCost}을(를) 쓰고 처형한다.\n" +
+            $"거부: 신뢰 -{GameBalance.RejectDemandPenalty}",
+            labelStyle);
+
+        bool canAccept = game.CanAcceptExecutionDemand();
+        bool previous = GUI.enabled;
+        GUI.enabled = canAccept;
+        if (GUI.Button(new Rect(area.x + 120, area.yMax - 70, 250, 50), canAccept ? "수락·처형" : "신뢰 부족", buttonStyle))
+        {
+            game.AcceptExecutionDemand();
+            popup = Popup.None;
+        }
+
+        GUI.enabled = previous;
+        if (GUI.Button(new Rect(area.x + 430, area.yMax - 70, 250, 50), "거부", buttonStyle))
+        {
+            game.RejectExecutionDemand();
             popup = Popup.None;
         }
     }
 
     void DrawResult()
     {
-        Rect area = new Rect(560, 220, 800, 560);
+        Rect area = new Rect(360, 80, 1200, 920);
         GUI.Box(area, GUIContent.none);
         GUI.Box(area, GUIContent.none);
         string title = game.Result == GameResult.Won ? "승리" : "패배";
-        GUI.Label(new Rect(area.x + 20, area.y + 15, 760, 40), $"{title} - {game.ResultMessage}", titleStyle);
-        TaggedLabel(new Rect(area.x + 20, area.y + 70, 760, 400), string.Join("\n", game.MorningReport), labelStyle);
+        GUI.Label(new Rect(area.x + 20, area.y + 15, 1160, 40), $"{title} - {game.ResultMessage}", titleStyle);
 
-        if (GUI.Button(new Rect(area.x + 275, area.yMax - 70, 250, 50), "다시 시작", buttonStyle))
+        string reveal = game.BuildRevealSummary();
+        float viewWidth = 1140f;
+        float viewHeight = Mathf.Max(700f, smallStyle.CalcHeight(new GUIContent(reveal), viewWidth) + 20f);
+        Rect scrollArea = new Rect(area.x + 20, area.y + 60, 1160, area.height - 150);
+        resultScroll = GUI.BeginScrollView(scrollArea, resultScroll, new Rect(0, 0, viewWidth, viewHeight));
+        GUI.Label(new Rect(0, 0, viewWidth, viewHeight), reveal, smallStyle);
+        GUI.EndScrollView();
+
+        if (GUI.Button(new Rect(area.x + 475, area.yMax - 70, 250, 50), "다시 시작", buttonStyle))
         {
+            resultScroll = Vector2.zero;
             StartNewGame();
         }
     }
