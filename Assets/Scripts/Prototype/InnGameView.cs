@@ -5,32 +5,33 @@ using UnityEngine;
 
 public class InnGameView : MonoBehaviour
 {
+    enum AppScreen
+    {
+        Title,
+        Difficulty,
+        Playing
+    }
+
     enum Popup
     {
         None,
         NightLog,
-        Report
+        Report,
+        Help
     }
 
     enum GuideCategory
     {
         Monster,
-        Trait,
+        Job,
         Facility,
         Clue
     }
 
     const float ReferenceWidth = 1920f;
     const float ReferenceHeight = 1080f;
-    const float CellWidth = 300f;
-    const float FloorHeight = 230f;
-    const float RoomHeight = 165f;
-    const float CellGap = 10f;
-    const float InnLeft = 30f;
-    const float InnTop = 90f;
-    const int InnColumns = 3;
-    const float LobbyTop = 580f;
-    const float LobbyHeight = 190f;
+    // 월드 공간 건물(객실·로비) 아래에 두는 기록 영역.
+    const float LogTop = 770f;
     const float PanelLeft = 1240f;
     const float PanelWidth = 660f;
     const float TooltipWidth = 420f;
@@ -40,13 +41,17 @@ public class InnGameView : MonoBehaviour
     static readonly string[] Tags = GameData.Tooltips.Select(t => t.Tag).OrderByDescending(t => t.Length).ToArray();
 
     InnGame game;
+    AppScreen screen = AppScreen.Title;
     Room selectedRoom;
     bool ownerRoomSelected;
-    Room movingFrom;
-    // 선택한 손님의 집중 심문 화면(특성 맞히기·검증)을 열었는지.
-    bool interrogating;
-    // 집중 심문 화면에서 특성 버튼이 맞히기 대신 검증(가졌는지 아닌지만 판정)으로 쓰이는지.
-    bool verifying;
+    // 로비 칸을 선택한 상태. 로비 목록에서 손님을 고르면 selectedRoom도 함께 잡힌다.
+    bool lobbySelected;
+    // 오른쪽 패널이 도감/메모 대신 선택 대상(방·로비·주인 방)의 행동을 보여 주는지.
+    bool showSelectionTab;
+    // 직업 행동 대상(방/손님)을 고르는 중인지.
+    bool ordering;
+    Guest orderFrom;
+    NightOrder orderType;
     // 처형은 되돌릴 수 없으므로, 같은 손님의 처형 버튼을 한 번 더 눌러야 실행한다.
     Guest executeConfirm;
     Popup popup;
@@ -70,20 +75,24 @@ public class InnGameView : MonoBehaviour
     string clickedTag;
     // 팝업에 가려졌거나 스크롤 영역 밖으로 잘린 태그는 툴팁을 띄우지 않기 위한 플래그.
     bool tooltipEnabled;
+    // 월드 공간 방 셀. 없으면 Resources/Prefabs/InnBuilding 또는 씬에 있는 InnBuildingView를 쓴다.
+    InnBuildingView building;
 
     GUIStyle labelStyle;
     GUIStyle smallStyle;
     GUIStyle titleStyle;
+    GUIStyle heroStyle;
     GUIStyle buttonStyle;
     GUIStyle textAreaStyle;
     readonly Dictionary<GUIStyle, GUIStyle> inlineStyles = new Dictionary<GUIStyle, GUIStyle>();
     readonly Dictionary<(int, string), float> pieceWidths = new Dictionary<(int, string), float>();
 
-    // 씬 설정 없이 플레이하면 바로 프로토타입이 뜨도록 한다.
+    // 씬 설정 없이 플레이하면 바로 게임이 뜨도록 한다. 순수 방 셀 데모만 있을 때는 끼어들지 않는다.
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     static void Bootstrap()
     {
-        if (FindAnyObjectByType<InnGameView>() != null)
+        if (FindAnyObjectByType<InnGameView>() != null ||
+            FindAnyObjectByType<InnRoomDemoBootstrap>() != null)
         {
             return;
         }
@@ -93,18 +102,246 @@ public class InnGameView : MonoBehaviour
 
     void Awake()
     {
-        StartNewGame();
+        EnsureBuilding();
+        ShowTitle();
     }
 
-    void StartNewGame()
+    void OnDestroy()
     {
-        game = new InnGame();
+        if (building != null)
+        {
+            building.RoomClicked -= OnBuildingRoomClicked;
+            building.LobbyClicked -= OnBuildingLobbyClicked;
+        }
+    }
+
+    void ShowTitle()
+    {
+        screen = AppScreen.Title;
+        game = null;
+        popup = Popup.None;
+        ClearSelectionState();
+        if (building != null)
+        {
+            building.gameObject.SetActive(false);
+        }
+    }
+
+    void ShowDifficulty()
+    {
+        screen = AppScreen.Difficulty;
+        popup = Popup.None;
+        ClearSelectionState();
+        if (building != null)
+        {
+            building.gameObject.SetActive(false);
+        }
+    }
+
+    void StartNewGame(Difficulty difficulty)
+    {
+        screen = AppScreen.Playing;
+        game = new InnGame(difficulty);
+        ClearSelectionState();
+        popup = Popup.Report;
+        if (building != null)
+        {
+            building.gameObject.SetActive(true);
+        }
+
+        RebuildBuilding();
+        FitCameraToBuilding();
+    }
+
+    void ClearSelectionState()
+    {
         selectedRoom = null;
         ownerRoomSelected = false;
-        movingFrom = null;
-        interrogating = false;
+        lobbySelected = false;
+        showSelectionTab = false;
+        ordering = false;
+        orderFrom = null;
         executeConfirm = null;
-        popup = Popup.Report;
+    }
+
+    void EnsureBuilding()
+    {
+        if (building != null)
+        {
+            return;
+        }
+
+        building = FindAnyObjectByType<InnBuildingView>();
+        if (building == null)
+        {
+            GameObject prefab = Resources.Load<GameObject>("Prefabs/InnBuilding");
+            if (prefab != null)
+            {
+                building = Instantiate(prefab).GetComponent<InnBuildingView>();
+                building.name = "InnBuilding";
+            }
+        }
+
+        if (building == null)
+        {
+            Debug.LogError("InnBuilding 프리팹을 찾지 못했습니다. Resources/Prefabs/InnBuilding 이 필요합니다.");
+            return;
+        }
+
+        // 건물(객실 + 0층 로비)이 화면 상단~중단, 기록 영역이 그 아래 오도록 위치를 맞춘다.
+        building.transform.position = new Vector3(0.25f, 1.55f, 0f);
+        building.RoomClicked -= OnBuildingRoomClicked;
+        building.RoomClicked += OnBuildingRoomClicked;
+        building.LobbyClicked -= OnBuildingLobbyClicked;
+        building.LobbyClicked += OnBuildingLobbyClicked;
+        EnsureInnCamera();
+        building.gameObject.SetActive(false);
+    }
+
+    void RebuildBuilding()
+    {
+        if (building == null || game == null)
+        {
+            return;
+        }
+
+        building.Build(game.Rooms, game.OwnerLocks, GameBalance.OwnerRoomLocks);
+        SyncBuildingSelection();
+    }
+
+    void RefreshBuilding()
+    {
+        if (building == null || game == null)
+        {
+            return;
+        }
+
+        building.Refresh(game.Rooms, game.OwnerLocks, GameBalance.OwnerRoomLocks);
+        building.SetOrderHighlight(orderFrom, ordering);
+        SyncBuildingSelection();
+    }
+
+    void SyncBuildingSelection()
+    {
+        if (building == null)
+        {
+            return;
+        }
+
+        if (ownerRoomSelected)
+        {
+            building.SelectOwner();
+        }
+        else if (selectedRoom != null)
+        {
+            building.SelectRoom(selectedRoom);
+        }
+        else if (lobbySelected)
+        {
+            building.SelectLobby();
+        }
+        else
+        {
+            building.Select(null);
+        }
+    }
+
+    void OnBuildingRoomClicked(RoomCellView cell)
+    {
+        // OnMouseDown은 OnGUI보다 먼저 올 수 있어 popup/결과만으로 막는다.
+        if (popup != Popup.None || game.Result != GameResult.Playing)
+        {
+            return;
+        }
+
+        showSelectionTab = true;
+        if (cell.IsOwnerRoom)
+        {
+            selectedRoom = null;
+            lobbySelected = false;
+            ownerRoomSelected = true;
+            executeConfirm = null;
+            ordering = false;
+            orderFrom = null;
+            SyncBuildingSelection();
+            return;
+        }
+
+        if (cell.BoundRoom != null)
+        {
+            lobbySelected = false;
+            OnRoomClicked(cell.BoundRoom);
+            SyncBuildingSelection();
+        }
+    }
+
+    void OnBuildingLobbyClicked(LobbyCellView lobby)
+    {
+        if (popup != Popup.None || game.Result != GameResult.Playing)
+        {
+            return;
+        }
+
+        showSelectionTab = true;
+        selectedRoom = null;
+        ownerRoomSelected = false;
+        lobbySelected = true;
+        executeConfirm = null;
+        SyncBuildingSelection();
+    }
+
+    static void EnsureInnCamera()
+    {
+        Camera cam = Camera.main;
+        if (cam == null)
+        {
+            GameObject go = new GameObject("Main Camera");
+            cam = go.AddComponent<Camera>();
+            go.tag = "MainCamera";
+            go.AddComponent<AudioListener>();
+        }
+
+        cam.orthographic = true;
+        // 기본(2×2) 배치 기준. 난이도에 따라 FitCameraToBuilding에서 다시 맞춘다.
+        cam.orthographicSize = 5.4f;
+        cam.transform.position = new Vector3(8.3f, 1.1f, -10f);
+        cam.backgroundColor = new Color(0.07f, 0.05f, 0.04f);
+        cam.clearFlags = CameraClearFlags.SolidColor;
+    }
+
+    void FitCameraToBuilding()
+    {
+        Camera cam = Camera.main;
+        if (cam == null || building == null)
+        {
+            return;
+        }
+
+        // 상단 바 아래~기록 영역 위, 오른쪽 패널 왼쪽에 건물이 들어오게 맞춤.
+        const float topGui = 90f;
+        const float bottomGui = LogTop - 35f;
+        const float leftGui = 40f;
+        float rightGui = PanelLeft - 20f;
+
+        Vector3 origin = building.transform.position;
+        float lobbyBottom = origin.y - InnBuildingView.FloorStride;
+        float buildingTop = origin.y + (building.MaxFloor - 1) * InnBuildingView.FloorStride + RoomCellView.CellHeight;
+        float buildingLeft = origin.x;
+        float buildingRight = origin.x + building.LobbyWidth;
+
+        float sizeY = (buildingTop - lobbyBottom) * ReferenceHeight / (2f * (bottomGui - topGui));
+        float aspect = (float)Screen.width / Mathf.Max(1, Screen.height);
+        float sizeX = (buildingRight - buildingLeft) * ReferenceWidth / (2f * aspect * (rightGui - leftGui));
+        float size = Mathf.Max(sizeY, sizeX);
+
+        float cy = lobbyBottom - size * (1f - 2f * bottomGui / ReferenceHeight);
+        float halfW = size * aspect;
+        float buildingCenterX = (buildingLeft + buildingRight) * 0.5f;
+        float contentCenterGui = (leftGui + rightGui) * 0.5f;
+        float cx = buildingCenterX - halfW * (2f * contentCenterGui / ReferenceWidth - 1f);
+
+        cam.orthographicSize = size;
+        cam.transform.position = new Vector3(cx, cy, -10f);
     }
 
     void OnGUI()
@@ -115,17 +352,32 @@ public class InnGameView : MonoBehaviour
         HandleShortcuts();
         // IMGUI 텍스트 입력은 IME가 자동으로 켜지지 않아 한글 조합이 안 되므로, 입력 중일 때만 강제로 켠다.
         Input.imeCompositionMode = GUIUtility.keyboardControl != 0 ? IMECompositionMode.On : IMECompositionMode.Auto;
-        inputEnabled = popup == Popup.None && game.Result == GameResult.Playing;
         hoveredTag = null;
         clickedTag = null;
+
+        if (screen == AppScreen.Title)
+        {
+            inputEnabled = true;
+            tooltipEnabled = false;
+            DrawTitleScreen();
+            return;
+        }
+
+        if (screen == AppScreen.Difficulty)
+        {
+            inputEnabled = true;
+            tooltipEnabled = false;
+            DrawDifficultyScreen();
+            return;
+        }
+
+        inputEnabled = popup == Popup.None && game.Result == GameResult.Playing;
         tooltipEnabled = inputEnabled;
 
         DrawTopBar();
-        DrawInn();
-        DrawTrust();
+        RefreshBuilding();
         DrawLog();
-        DrawSelectionPanel();
-        DrawGuidePanel();
+        DrawRightPanel();
 
         tooltipEnabled = true;
         if (popup == Popup.NightLog)
@@ -139,6 +391,10 @@ public class InnGameView : MonoBehaviour
         else if (popup == Popup.Report)
         {
             DrawReport();
+        }
+        else if (popup == Popup.Help)
+        {
+            DrawHelp();
         }
 
         DrawTooltip();
@@ -159,8 +415,46 @@ public class InnGameView : MonoBehaviour
         labelStyle = new GUIStyle(GUI.skin.label) { fontSize = 20, wordWrap = true };
         smallStyle = new GUIStyle(labelStyle) { fontSize = 17 };
         titleStyle = new GUIStyle(labelStyle) { fontSize = 24, fontStyle = FontStyle.Bold };
+        heroStyle = new GUIStyle(labelStyle)
+        {
+            fontSize = 54,
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleCenter
+        };
         buttonStyle = new GUIStyle(GUI.skin.button) { fontSize = 19 };
         textAreaStyle = new GUIStyle(GUI.skin.textArea) { fontSize = 18, wordWrap = true };
+        ApplyButtonArt();
+    }
+
+    // Resources/UI 의 9-slice 텍스처를 버튼 스타일에 입힌다. 없으면 기본 스킨을 그대로 쓴다.
+    void ApplyButtonArt()
+    {
+        Texture2D normal = Resources.Load<Texture2D>("UI/button_normal");
+        Texture2D hover = Resources.Load<Texture2D>("UI/button_hover");
+        Texture2D active = Resources.Load<Texture2D>("UI/button_active");
+        if (normal == null)
+        {
+            return;
+        }
+
+        Color text = new Color(0.9f, 0.82f, 0.65f);
+        Color textHover = new Color(1f, 0.93f, 0.75f);
+        buttonStyle.border = new RectOffset(12, 12, 12, 12);
+        buttonStyle.padding = new RectOffset(10, 10, 6, 6);
+        buttonStyle.normal.background = normal;
+        buttonStyle.normal.textColor = text;
+        buttonStyle.hover.background = hover != null ? hover : normal;
+        buttonStyle.hover.textColor = textHover;
+        buttonStyle.active.background = active != null ? active : normal;
+        buttonStyle.active.textColor = textHover;
+        buttonStyle.focused.background = normal;
+        buttonStyle.focused.textColor = text;
+        buttonStyle.onNormal.background = normal;
+        buttonStyle.onNormal.textColor = text;
+        buttonStyle.onHover.background = hover != null ? hover : normal;
+        buttonStyle.onHover.textColor = textHover;
+        buttonStyle.onActive.background = active != null ? active : normal;
+        buttonStyle.onActive.textColor = textHover;
     }
 
     void HandleShortcuts()
@@ -190,13 +484,35 @@ public class InnGameView : MonoBehaviour
             return;
         }
 
+        if (screen == AppScreen.Title)
+        {
+            if (e.keyCode == KeyCode.Space || e.keyCode == KeyCode.Return)
+            {
+                ShowDifficulty();
+                e.Use();
+            }
+
+            return;
+        }
+
+        if (screen == AppScreen.Difficulty)
+        {
+            if (e.keyCode == KeyCode.Escape)
+            {
+                ShowTitle();
+                e.Use();
+            }
+
+            return;
+        }
+
         if (e.keyCode == KeyCode.Space)
         {
             if (popup == Popup.NightLog)
             {
                 AdvanceNightLog();
             }
-            else if (popup == Popup.Report)
+            else if (popup == Popup.Report || popup == Popup.Help)
             {
                 popup = Popup.None;
             }
@@ -213,11 +529,19 @@ public class InnGameView : MonoBehaviour
         }
         else if (e.keyCode == KeyCode.Escape)
         {
-            movingFrom = null;
-            interrogating = false;
+            if (popup == Popup.Help)
+            {
+                popup = Popup.None;
+                e.Use();
+                return;
+            }
+
+            ordering = false;
+            orderFrom = null;
             executeConfirm = null;
             selectedRoom = null;
             ownerRoomSelected = false;
+            lobbySelected = false;
             e.Use();
         }
     }
@@ -225,8 +549,8 @@ public class InnGameView : MonoBehaviour
     void EndDay()
     {
         game.EndDay();
-        movingFrom = null;
-        interrogating = false;
+        ordering = false;
+        orderFrom = null;
         executeConfirm = null;
         nightLogIndex = 0;
         popup = Popup.NightLog;
@@ -235,8 +559,8 @@ public class InnGameView : MonoBehaviour
     void AdvancePhase()
     {
         game.AdvancePhase();
-        movingFrom = null;
-        interrogating = false;
+        ordering = false;
+        orderFrom = null;
         executeConfirm = null;
     }
 
@@ -465,12 +789,13 @@ public class InnGameView : MonoBehaviour
 
     void OpenGuidePage(string tag)
     {
-        if (!showMemoTab && guideTag == tag)
+        if (!showSelectionTab && !showMemoTab && guideTag == tag)
         {
             return;
         }
 
         guideHistory.Push((showMemoTab, guideCategory, guideTag, guideScroll));
+        showSelectionTab = false;
         showMemoTab = false;
         guideTag = tag;
         guideScroll = Vector2.zero;
@@ -490,17 +815,18 @@ public class InnGameView : MonoBehaviour
     static string BuildGuidePage(string tag)
     {
         StringBuilder text = new StringBuilder();
-        TraitDefinition trait = System.Array.Find(GameData.Traits, t => t.Name == tag);
+        JobDefinition job = System.Array.Find(GameData.Jobs, j => j.Name == tag);
         FacilityDefinition facility = System.Array.Find(GameData.Facilities, f => f.Name == tag);
         ClueDefinition clue = System.Array.Find(GameData.Clues, c => c.Name == tag);
         SpeciesDefinition monster = System.Array.Find(GameData.Monsters, m => m.Name == tag);
 
-        text.AppendLine(GameData.GetTooltip(tag) ?? trait?.Effect ?? facility?.Description ?? clue?.Description);
-        if (trait != null)
+        text.AppendLine(GameData.GetTooltip(tag) ?? job?.Feature ?? facility?.Description ?? clue?.Description);
+        if (job != null)
         {
             text.AppendLine();
-            text.AppendLine("[손님 특성] 괴물도 손님 특성을 1개 가지며, 그 특성대로 행동한다.");
-            text.AppendLine(trait.Detail);
+            text.AppendLine($"[손님 직업 · {GameData.GetCategoryName(job.Category)}]");
+            text.AppendLine(job.Feature);
+            text.AppendLine($"요청: {job.Request}");
         }
 
         if (facility != null)
@@ -519,7 +845,22 @@ public class InnGameView : MonoBehaviour
         if (monster != null)
         {
             text.AppendLine();
-            text.AppendLine($"고유 특성: {monster.Trait}");
+            text.AppendLine($"공통 특성: {monster.Trait}");
+            text.AppendLine("회차 예고·표적은 헌터 정보로만 공개된다.");
+        }
+
+        OmenTraitDefinition omen = System.Array.Find(GameData.OmenTraits, o => o.Name == tag);
+        if (omen != null)
+        {
+            text.AppendLine();
+            text.AppendLine($"[예고 특성] {omen.Effect}");
+        }
+
+        TargetRuleDefinition target = System.Array.Find(GameData.TargetRules, t => t.Name == tag);
+        if (target != null)
+        {
+            text.AppendLine();
+            text.AppendLine($"[표적 특성] {target.Effect}");
         }
 
         return text.ToString();
@@ -533,210 +874,89 @@ public class InnGameView : MonoBehaviour
     {
         GUI.Box(new Rect(0, 0, ReferenceWidth, 70), GUIContent.none);
         string status = $"{game.Day}일차 / {GameBalance.TargetDay}일 ({GameData.GetPhaseName(game.Phase)})     " +
-                        $"신뢰 {game.Trust}     " +
-                        $"집중 심문 {game.Interrogations}/{GameBalance.DailyInterrogations}     " +
-                        $"주인 방 자물쇠 {game.OwnerLocks}/{GameBalance.OwnerRoomLocks}";
-        TaggedLabel(new Rect(20, 18, 1520, 40), status, labelStyle);
+                        $"직업 행동 {game.JobActionsLeft}/{GameBalance.DailyJobActions}     " +
+                        $"처형 {game.ExecutionsLeft}/{GameBalance.DailyExecutions}";
+        TaggedLabel(new Rect(20, 18, 1380, 40), status, labelStyle);
 
-        if (game.Phase == DayPhase.Prepare)
+        // 튜토리얼 안내는 상시 표시하지 않고 버튼으로만 연다.
+        if (Button(new Rect(1410, 10, 130, 50), "도움말"))
+        {
+            popup = Popup.Help;
+        }
+
+        if (game.Phase == DayPhase.Focus)
         {
             if (Button(new Rect(1560, 10, 340, 50), "밤으로 (Space)", game.CanEndDay))
             {
                 EndDay();
             }
         }
-        else if (Button(new Rect(1560, 10, 340, 50), $"다음: {GameData.GetPhaseName(game.Phase + 1)} (Space)", game.CanAdvancePhase))
+        else if (Button(new Rect(1560, 10, 340, 50), $"다음: {GameData.GetPhaseName(DayPhase.Focus)} (Space)", game.CanAdvancePhase))
         {
             AdvancePhase();
         }
     }
 
-    static float GetFloorTop(int floor)
-    {
-        return InnTop + (2 - floor) * (FloorHeight + CellGap);
-    }
-
-    static Rect GetCellRect(int floor, int column)
-    {
-        return new Rect(InnLeft + column * (CellWidth + CellGap), GetFloorTop(floor), CellWidth, RoomHeight);
-    }
-
-    void DrawInn()
-    {
-        GUI.Box(new Rect(InnLeft - 10, InnTop - 10, InnColumns * (CellWidth + CellGap) + 10, 2 * (FloorHeight + CellGap) + 10), GUIContent.none);
-
-        for (int floor = 1; floor <= 2; floor++)
-        {
-            float top = GetFloorTop(floor) + RoomHeight + 8;
-            GUI.Box(new Rect(InnLeft, top, InnColumns * (CellWidth + CellGap) - CellGap, FloorHeight - RoomHeight - 8), GUIContent.none);
-        }
-
-        DrawOwnerRoom();
-        foreach (Room room in game.Rooms)
-        {
-            DrawRoom(room);
-        }
-
-        DrawLobby();
-    }
-
-    // 낮에 방에서 나온 손님이 모이는 구역. 건물 아래층에 붙어 있다.
-    // 손님 자리는 객실 배치와 같은 위치에 두고, 나오지 않은 손님 자리는 빈칸으로 둔다.
-    void DrawLobby()
-    {
-        Rect area = new Rect(InnLeft - 10, LobbyTop, InnColumns * (CellWidth + CellGap) + 10, LobbyHeight);
-        GUI.Box(area, GUIContent.none);
-        GUI.Label(new Rect(InnLeft, LobbyTop + 10, CellWidth, LobbyHeight - 20), "로비\n대화와 집중 심문은 로비에 나온 손님하고만 할 수 있다.", labelStyle);
-
-        Color previousColor = GUI.backgroundColor;
-        foreach (Room room in game.Rooms)
-        {
-            Rect rect = GetLobbySlotRect(room.Floor, room.Column);
-            if (room.Guest == null || !room.Guest.IsOut)
-            {
-                GUI.Box(rect, GUIContent.none);
-                continue;
-            }
-
-            GUI.backgroundColor = room == selectedRoom ? Color.yellow : new Color(0.55f, 0.85f, 1f);
-            if (Button(rect, $"{room.Guest.DisplayName} ({room.DisplayName})"))
-            {
-                OnRoomClicked(room);
-            }
-        }
-
-        GUI.backgroundColor = previousColor;
-    }
-
-    static Rect GetLobbySlotRect(int floor, int column)
-    {
-        float slotHeight = (LobbyHeight - 30) / 2;
-        return new Rect(InnLeft + column * (CellWidth + CellGap), LobbyTop + 10 + (2 - floor) * (slotHeight + CellGap), CellWidth, slotHeight);
-    }
-
-    void DrawOwnerRoom()
-    {
-        Rect rect = GetCellRect(InnGame.OwnerFloor, InnGame.OwnerColumn);
-        if (DrawCell(rect, ownerRoomSelected, false, false))
-        {
-            selectedRoom = null;
-            ownerRoomSelected = true;
-        }
-
-        GUI.Label(Inset(rect), $"주인 방\n자물쇠 {game.OwnerLocks}/{GameBalance.OwnerRoomLocks}", labelStyle);
-    }
-
-    void DrawRoom(Room room)
-    {
-        Rect rect = GetCellRect(room.Floor, room.Column);
-        bool highlight = movingFrom != null && room != movingFrom;
-        bool doorOpen = room.Guest != null && room.Guest.IsOut;
-        if (DrawCell(rect, room == selectedRoom, highlight, doorOpen))
-        {
-            OnRoomClicked(room);
-        }
-
-        TaggedLabel(Inset(rect), BuildRoomText(room), labelStyle);
-    }
-
-    bool DrawCell(Rect rect, bool selected, bool highlight, bool doorOpen)
-    {
-        Color previousColor = GUI.backgroundColor;
-        if (selected)
-        {
-            GUI.backgroundColor = Color.yellow;
-        }
-        else if (highlight)
-        {
-            GUI.backgroundColor = Color.green;
-        }
-        else if (doorOpen)
-        {
-            GUI.backgroundColor = new Color(0.55f, 0.85f, 1f);
-        }
-
-        bool previousEnabled = GUI.enabled;
-        GUI.enabled = inputEnabled;
-        bool clicked = GUI.Button(rect, GUIContent.none);
-        GUI.enabled = previousEnabled;
-        GUI.backgroundColor = previousColor;
-        return clicked;
-    }
-
-    static Rect Inset(Rect rect)
-    {
-        return new Rect(rect.x + 10, rect.y + 8, rect.width - 20, rect.height - 16);
-    }
-
-    static string BuildRoomText(Room room)
-    {
-        StringBuilder text = new StringBuilder();
-        text.AppendLine(room.DisplayName);
-
-        if (room.Guest == null)
-        {
-            text.AppendLine("빈 방");
-        }
-        else
-        {
-            text.AppendLine(room.Guest.DisplayName);
-            if (room.Guest.TraitKnown)
-            {
-                text.AppendLine($"특성: {GameData.Traits.First(t => t.Id == room.Guest.Trait).Name}");
-            }
-        }
-
-        if (room.Installed.Count > 0)
-        {
-            text.AppendLine(string.Join(" ", room.Installed.Select(f => $"[{GameData.GetFacility(f).Name}]")));
-        }
-
-        return text.ToString();
-    }
-
     void OnRoomClicked(Room room)
     {
         ownerRoomSelected = false;
-        interrogating = false;
         executeConfirm = null;
 
-        if (movingFrom != null)
+        if (ordering && orderFrom != null)
         {
-            if (room != movingFrom && game.Move(movingFrom, room))
-            {
-                selectedRoom = room;
-            }
-
-            movingFrom = null;
+            ApplyOrderTarget(room);
             return;
         }
 
         selectedRoom = room;
+        if (game.CanHearClaim(room))
+        {
+            game.HearClaim(room);
+        }
+    }
+
+    void ApplyOrderTarget(Room room)
+    {
+        Guest actor = orderFrom;
+        switch (orderType)
+        {
+            case NightOrder.LockRoom:
+                game.SetOrderLock(actor, room);
+                break;
+            case NightOrder.PerfumeRoom:
+                game.SetOrderPerfume(actor, room);
+                break;
+            case NightOrder.WatchRoom:
+                game.SetOrderWatch(actor, room);
+                break;
+            case NightOrder.CleanRoom:
+                game.SetOrderClean(actor, room);
+                break;
+            case NightOrder.RememberGuest:
+                if (room.Guest != null)
+                {
+                    game.SetOrderRemember(actor, room.Guest);
+                }
+                break;
+        }
+
+        ordering = false;
+        orderFrom = null;
+        selectedRoom = FindGuestRoom(actor) ?? room;
+    }
+
+    Room FindGuestRoom(Guest guest)
+    {
+        return game.Rooms.FirstOrDefault(r => r.Guest == guest);
     }
 
     #endregion
 
-    #region 신뢰·기록
-
-    void DrawTrust()
-    {
-        float left = InnLeft + InnColumns * (CellWidth + CellGap) + 10;
-        Rect area = new Rect(left, LobbyTop, PanelLeft - left - 20, LobbyHeight);
-        GUI.Box(area, GUIContent.none);
-        float x = area.x + 10;
-        float y = area.y + 5;
-
-        GUI.Label(new Rect(x, y, area.width - 20, 34), $"신뢰 {game.Trust}", titleStyle);
-        y += 38;
-        string costs = $"조사·부르기·교환 {GameBalance.InspectCost}\n" +
-                       $"특성 검증 {GameBalance.VerifyCost} / 처형 {GameBalance.ExecuteCost}\n" +
-                       string.Join("\n", GameData.Facilities.Select(f => $"{f.Name} {f.Price}"));
-        TaggedLabel(new Rect(x, y, area.width - 20, area.yMax - y - 5), costs, smallStyle);
-    }
+    #region 힌트·기록
 
     void DrawLog()
     {
-        Rect area = new Rect(20, LobbyTop + LobbyHeight + 10, 1200, ReferenceHeight - LobbyTop - LobbyHeight - 20);
+        Rect area = new Rect(20, LogTop, PanelLeft - 40, ReferenceHeight - LogTop - 10);
         GUI.Box(area, GUIContent.none);
 
         StringBuilder text = new StringBuilder();
@@ -752,76 +972,112 @@ public class InnGameView : MonoBehaviour
 
     #region 오른쪽 패널
 
-    void DrawSelectionPanel()
+    // 오른쪽에는 패널 하나만 둔다. 탭으로 선택 대상 행동 / 도감 / 자유 메모를 번갈아 보여 준다.
+    void DrawRightPanel()
     {
-        Rect area = new Rect(PanelLeft, 80, PanelWidth, 560);
+        Rect area = new Rect(PanelLeft, 80, PanelWidth, ReferenceHeight - 90);
         GUI.Box(area, GUIContent.none);
+
+        if (Button(new Rect(area.x + 15, area.y + 8, 100, 36), "선택", !showSelectionTab))
+        {
+            showSelectionTab = true;
+        }
+
+        if (Button(new Rect(area.x + 120, area.y + 8, 100, 36), "도감", showSelectionTab || showMemoTab))
+        {
+            showSelectionTab = false;
+            showMemoTab = false;
+        }
+
+        if (Button(new Rect(area.x + 225, area.y + 8, 100, 36), "자유 메모", showSelectionTab || !showMemoTab))
+        {
+            showSelectionTab = false;
+            showMemoTab = true;
+        }
+
+        if (showSelectionTab)
+        {
+            DrawSelectionPanel(area);
+        }
+        else
+        {
+            DrawGuidePanel(area);
+        }
+    }
+
+    void DrawSelectionPanel(Rect area)
+    {
         float x = area.x + 15;
-        float y = area.y + 10;
+        float y = area.y + 56;
 
         if (ownerRoomSelected)
         {
-            GUI.Label(new Rect(x, y, 600, 34), "주인 방", titleStyle);
-            GUI.Label(new Rect(x, y + 50, 620, 120),
-                $"주인 방 자물쇠 {game.OwnerLocks}/{GameBalance.OwnerRoomLocks}\n모든 특성을 무시하고 공격을 막는다. 1회 막으면 파괴되며 보충할 수 없다.", labelStyle);
+            return;
+        }
+
+        if (lobbySelected && selectedRoom == null)
+        {
+            DrawLobbyPanel(x, y);
             return;
         }
 
         if (selectedRoom == null)
         {
-            GUI.Label(new Rect(x, y, 620, 200), "방이나 로비의 손님을 클릭해 선택하세요.\n낮은 세 단계로 진행되며 이전 단계로 돌아갈 수 없습니다.\n" +
-                                                "1. 소집·조사: 로비로 부르기, 방 조사\n2. 대화·심문: 로비 손님과 대화(하루 1회), 집중 심문\n3. 처형·밤 준비: 처형, 방 교환, 설비 설치", labelStyle);
+            GUI.Label(new Rect(x, y, 620, 80), "객실·로비 방을 클릭해 선택한다.\n자세한 진행 방법은 상단 [도움말]에서 확인할 수 있다.", labelStyle);
             return;
         }
 
         Room room = selectedRoom;
-        GUI.Label(new Rect(x, y, 600, 34), room.DisplayName, titleStyle);
+        if (lobbySelected)
+        {
+            // 로비 목록에서 고른 손님. 돌아가기로 로비 목록을 다시 연다.
+            if (Button(new Rect(area.xMax - 135, y, 120, 34), "< 로비"))
+            {
+                selectedRoom = null;
+                executeConfirm = null;
+                return;
+            }
+        }
+
+        GUI.Label(new Rect(x, y, 480, 34), room.DisplayName, titleStyle);
         y += 45;
 
         if (room.Guest == null)
         {
-            GUI.Label(new Rect(x, y, 300, 40), "빈 방", labelStyle);
-            if (Button(new Rect(x + 210, y, 200, 40), $"방 조사 ({GameBalance.InspectCost})", game.CanInspect(room)))
+            GUI.Label(new Rect(x, y, 500, 40), room.DoorLocked ? "빈 방 (잠김)" : "빈 방", labelStyle);
+            if (game.Phase == DayPhase.Gather)
             {
-                game.Inspect(room);
+                string inspectLabel = room.DoorLocked ? "조사 (잠김)" : "조사 (하루 1방)";
+                if (Button(new Rect(x, y + 50, 305, 40), inspectLabel, game.CanInspect(room)))
+                {
+                    game.Inspect(room);
+                }
             }
 
             return;
         }
 
         float contentTop = y;
-        switch (game.Phase)
+        if (game.Phase == DayPhase.Gather)
         {
-            case DayPhase.Gather:
-                DrawGatherActions(room, x, y);
-                break;
-            case DayPhase.Talk:
-                DrawTalkActions(room, x, y);
-                break;
-            default:
-                if (DrawPrepareActions(room, x, y))
-                {
-                    return;
-                }
-                break;
+            DrawGatherActions(room, x, y);
+        }
+        else if (DrawFocusActions(room, x, y))
+        {
+            return;
         }
 
-        y = contentTop + 100;
-        if (movingFrom == room)
+        y = contentTop + 150;
+        if (ordering && orderFrom == room.Guest)
         {
-            GUI.Label(new Rect(x, y, 620, 30), "옮길 방을 클릭하세요. 손님이 있으면 서로 방을 바꿉니다. (Esc 취소)", smallStyle);
+            GUI.Label(new Rect(x, y, 620, 30), "직업 행동 대상을 클릭한다. (Esc 취소)", smallStyle);
         }
-        else if (!room.Guest.IsOut)
+        else if (!room.Guest.IsOut && game.Phase == DayPhase.Focus)
         {
-            GUI.Label(new Rect(x, y, 620, 30), "방에 틀어박혀 있다. 조사·대화·심문은 소집·조사 단계에 로비로 불러야 할 수 있다.", smallStyle);
+            GUI.Label(new Rect(x, y, 620, 30), "손님이 방에 있다. 어젯밤 일을 들으려면 로비로 불러야 한다.", smallStyle);
         }
 
         y += 35;
-        if (game.Phase == DayPhase.Talk && interrogating && game.CanInterrogate(room))
-        {
-            DrawInterrogation(room, x, y);
-            return;
-        }
 
         GUI.Label(new Rect(x, y + 15, 70, 30), "메모", labelStyle);
         room.Guest.Memo = TextArea(new Rect(x + 70, y, PanelWidth - 100, 60), room.Guest.Memo);
@@ -845,39 +1101,59 @@ public class InnGameView : MonoBehaviour
         GUI.EndScrollView();
     }
 
+    // 로비 칸을 선택했을 때. 로비에 나온 손님 목록을 보여 주고, 고르면 그 손님의 행동 패널로 넘어간다.
+    void DrawLobbyPanel(float x, float y)
+    {
+        GUI.Label(new Rect(x, y, 600, 34), "로비", titleStyle);
+        y += 45;
+        GUI.Label(new Rect(x, y, 620, 50), "대화는 로비에 나온 손님하고만 할 수 있다.", smallStyle);
+        y += 55;
+
+        List<Room> outRooms = game.Rooms.Where(r => r.Guest != null && r.Guest.IsOut).ToList();
+        if (outRooms.Count == 0)
+        {
+            GUI.Label(new Rect(x, y, 620, 40), "로비에 아무도 없다. 손님을 로비로 부를 수 있다.", labelStyle);
+            return;
+        }
+
+        foreach (Room room in outRooms)
+        {
+            if (Button(new Rect(x, y, PanelWidth - 30, 44), $"{room.Guest.DisplayName} ({room.DisplayName})"))
+            {
+                OnRoomClicked(room);
+                SyncBuildingSelection();
+            }
+
+            y += 50;
+        }
+    }
+
     void DrawGatherActions(Room room, float x, float y)
     {
-        if (Button(new Rect(x, y, 305, 40), $"로비로 부르기 ({GameBalance.CallCost})", game.CanLureOut(room)))
+        if (Button(new Rect(x, y, 305, 40), "로비로 부르기", game.CanLureOut(room)))
         {
             game.LureOut(room);
         }
 
-        if (Button(new Rect(x + 315, y, 305, 40), $"방 조사 ({GameBalance.InspectCost})", game.CanInspect(room)))
+        string inspectLabel = room.DoorLocked ? "조사 (잠김)" : "조사 (하루 1방)";
+        if (Button(new Rect(x + 315, y, 305, 40), inspectLabel, game.CanInspect(room)))
         {
             game.Inspect(room);
         }
     }
 
-    void DrawTalkActions(Room room, float x, float y)
+    // 처형으로 손님이 사라지면 true를 돌려 나머지 그리기를 멈춘다.
+    bool DrawFocusActions(Room room, float x, float y)
     {
-        if (Button(new Rect(x, y, 305, 40), "어젯밤 일", game.CanTalk(room)))
+        if (Button(new Rect(x, y, 200, 40), "어젯밤 일", game.CanTalk(room)))
         {
             game.Talk(room);
         }
 
-        y += 50;
-        if (Button(new Rect(x, y, 305, 40), $"집중 심문 (남은 {game.Interrogations}회)", game.CanInterrogate(room) && !interrogating))
-        {
-            interrogating = true;
-            verifying = false;
-        }
-    }
+        DrawJobOrderButtons(room, x + 210, y);
 
-    // 처형으로 손님이 사라지면 true를 돌려 나머지 그리기를 멈춘다.
-    bool DrawPrepareActions(Room room, float x, float y)
-    {
         bool confirming = executeConfirm == room.Guest;
-        if (Button(new Rect(x, y, 305, 40), confirming ? "정말 처형? (다시 클릭)" : $"처형 ({GameBalance.ExecuteCost})", game.CanExecute(room)))
+        if (Button(new Rect(x + 430, y, 200, 40), confirming ? "정말로 처형한다?" : $"처형 ({game.ExecutionsLeft})", game.CanExecute(room)))
         {
             if (confirming)
             {
@@ -889,80 +1165,73 @@ public class InnGameView : MonoBehaviour
             executeConfirm = room.Guest;
         }
 
-        if (Button(new Rect(x + 315, y, 305, 40), $"방 옮기기·교환 ({GameBalance.MoveCost})", game.CanMove(room) && movingFrom == null))
-        {
-            movingFrom = room;
-        }
-
-        y += 50;
-        float buttonX = x;
-        foreach (FacilityDefinition facility in GameData.Facilities)
-        {
-            if (Button(new Rect(buttonX, y, 200, 40), $"{facility.Name} ({facility.Price})", game.CanInstall(room, facility.Id)))
-            {
-                game.Install(room, facility.Id);
-            }
-
-            buttonX += 210;
-        }
-
         return false;
     }
 
-    // 메모·기록 자리에 특성 버튼과 맞히기/검증 전환 버튼을 대신 보여 준다.
-    void DrawInterrogation(Room room, float x, float y)
+    void DrawJobOrderButtons(Room room, float x, float y)
     {
-        string question = verifying
-            ? $"{room.Guest.DisplayName}이(가) 이 특성을 가졌는지 검증한다. (신뢰 -{GameBalance.VerifyCost})"
-            : $"{room.Guest.DisplayName}의 특성은? (맞히면 신뢰 +{GameBalance.GuessReward}, 틀리면 -{GameBalance.GuessPenalty})";
-        GUI.Label(new Rect(x, y, 620, 30), question, labelStyle);
-        y += 40;
-
-        for (int i = 0; i < GameData.Traits.Length; i++)
+        Job? requestable = game.GetRequestableJob(room.Guest);
+        if (requestable == null)
         {
-            TraitDefinition trait = GameData.Traits[i];
-            if (Button(new Rect(x + i % 3 * 210, y + i / 3 * 45, 200, 40), trait.Name, !verifying || game.CanVerifyTrait(room)))
+            if (room.Guest.ClaimHeard && room.Guest.ClaimedJob == Job.Scout)
             {
-                interrogating = false;
-                if (verifying)
-                {
-                    game.VerifyTrait(room, trait.Id);
-                }
-                else
-                {
-                    game.GuessTrait(room, trait.Id);
-                }
+                GUI.Label(new Rect(x, y, 210, 40), "정찰 보고", smallStyle);
             }
+            else if (!room.Guest.ClaimHeard)
+            {
+                GUI.Label(new Rect(x, y, 210, 40), "직업 미청취", smallStyle);
+            }
+
+            return;
         }
 
-        y += (GameData.Traits.Length + 2) / 3 * 45 + 5;
-        string modeLabel = verifying ? "맞히기로 전환" : $"검증으로 전환 ({GameBalance.VerifyCost})";
-        if (Button(new Rect(x, y, 305, 40), modeLabel, verifying || game.CanVerifyTrait(room)))
+        Job job = requestable.Value;
+        string label = room.Guest.PendingOrder == NightOrder.None
+            ? $"행동:{GameData.GetJob(job).Name} ({game.JobActionsLeft})"
+            : "행동 취소";
+        if (!Button(new Rect(x, y, 210, 40), label, game.CanOrder(room) || room.Guest.PendingOrder != NightOrder.None))
         {
-            verifying = !verifying;
+            return;
         }
 
-        if (Button(new Rect(x + 315, y, 305, 40), "취소"))
+        if (room.Guest.PendingOrder != NightOrder.None)
         {
-            interrogating = false;
+            game.ClearOrder(room.Guest);
+            ordering = false;
+            orderFrom = null;
+            return;
+        }
+
+        if (job == Job.Informant)
+        {
+            game.SetOrderInformant(room.Guest);
+            return;
+        }
+
+        ordering = true;
+        orderFrom = room.Guest;
+        switch (job)
+        {
+            case Job.Locksmith:
+                orderType = NightOrder.LockRoom;
+                break;
+            case Job.Pharmacist:
+                orderType = NightOrder.PerfumeRoom;
+                break;
+            case Job.DogHandler:
+                orderType = NightOrder.WatchRoom;
+                break;
+            case Job.Cleaner:
+                orderType = NightOrder.CleanRoom;
+                break;
+            case Job.Butler:
+                orderType = NightOrder.RememberGuest;
+                break;
         }
     }
 
-    void DrawGuidePanel()
+    void DrawGuidePanel(Rect area)
     {
-        Rect area = new Rect(PanelLeft, 650, PanelWidth, 420);
-        GUI.Box(area, GUIContent.none);
-
-        if (Button(new Rect(area.x + 15, area.y + 8, 150, 36), "도감", showMemoTab))
-        {
-            showMemoTab = false;
-        }
-
-        if (Button(new Rect(area.x + 175, area.y + 8, 150, 36), "자유 메모", !showMemoTab))
-        {
-            showMemoTab = true;
-        }
-
         Rect content = new Rect(area.x + 15, area.y + 52, PanelWidth - 30, area.height - 62);
         if (showMemoTab)
         {
@@ -974,7 +1243,7 @@ public class InnGameView : MonoBehaviour
             return;
         }
 
-        string[] categoryNames = { "괴물", "특성", "설비", "단서" };
+        string[] categoryNames = { "괴물", "직업", "설비", "단서" };
         for (int i = 0; i < categoryNames.Length; i++)
         {
             GuideCategory category = (GuideCategory)i;
@@ -1018,10 +1287,10 @@ public class InnGameView : MonoBehaviour
                     text.AppendLine($"  {monsterTooltip}");
                 }
 
-                text.AppendLine($"  고유 특성: {monster.Trait}");
-                text.AppendLine("  괴물도 손님 특성을 1개 가지며, 그 특성대로 행동한다.");
+                text.AppendLine($"  공통 특성: {monster.Trait}");
+                text.AppendLine("  괴물도 손님 직업 1개를 가진다.");
                 text.AppendLine();
-                text.AppendLine("[정보원에게 들은 패턴]");
+                text.AppendLine("[헌터 손님에게 들은 정보]");
                 if (game.RevealedFragments.Count == 0)
                 {
                     text.AppendLine("  아직 없음");
@@ -1033,24 +1302,17 @@ public class InnGameView : MonoBehaviour
                 }
                 break;
 
-            case GuideCategory.Trait:
-                text.AppendLine("모든 손님에게 1개씩 있다.");
-                foreach (TraitDefinition trait in GameData.Traits)
+            case GuideCategory.Job:
+                foreach (JobDefinition job in GameData.Jobs)
                 {
                     text.AppendLine();
-                    text.AppendLine($"[{trait.Name}] {GameData.GetTooltip(trait.Name) ?? trait.Effect}");
-                    text.AppendLine(trait.Detail);
+                    text.AppendLine($"[{GameData.GetCategoryName(job.Category)}] {job.Name}");
+                    text.AppendLine(job.Feature);
+                    text.AppendLine($"행동: {job.Request}");
                 }
                 break;
 
             case GuideCategory.Facility:
-                text.AppendLine("설치한 날 밤에만 효과가 있다.");
-                foreach (FacilityDefinition facility in GameData.Facilities)
-                {
-                    text.AppendLine();
-                    text.AppendLine($"[{facility.Name}] {GameData.GetTooltip(facility.Name) ?? facility.Description}");
-                    text.AppendLine(facility.Detail);
-                }
                 break;
 
             case GuideCategory.Clue:
@@ -1107,6 +1369,32 @@ public class InnGameView : MonoBehaviour
         }
     }
 
+    // 상단 [도움말] 버튼으로만 여는 튜토리얼 안내.
+    void DrawHelp()
+    {
+        Rect area = new Rect(460, 180, 1000, 640);
+        GUI.Box(area, GUIContent.none);
+        GUI.Box(area, GUIContent.none);
+        GUI.Label(new Rect(area.x + 20, area.y + 15, 960, 40), "도움말", titleStyle);
+
+        string text = "목표: 괴물들을 모두 찾아내 처형하십시오!\n\n" +
+                      "[화면]\n" +
+                      "건물: 객실과 주인 방. 클릭하면 오른쪽 패널에서 상호작용할 수 있습니다.\n" +
+                      "로비: 낮에 방에서 나온 손님이 모입니다. 로비의 손님을 클릭해서 상호작용할 수 있습니다.\n\n" +
+                      "[낮 진행]\n" +
+                      "소집·조사: 회의 시작 전 로비로 회의에 참가할 인원들을 모집하거나, 방을 조사할 수 있습니다.\n" +
+                      "집중 심문: 손님 1명에게 행동을 요청하고, 손님 1명을 처형할 수 있습니다.\n" +
+                      "기본적으로 잠긴 방은 조사할 수 없습니다. 흔적이 약하게 남는 단서들의 경우 수색 직업의 손님에게 맡겨야 합니다.\n\n" +
+                      "[단축키]\n" +
+                      "Space: 다음 단계 / 밤으로 / 팝업 닫기     Esc: 선택·대상 지정 취소";
+        TaggedLabel(new Rect(area.x + 20, area.y + 70, 960, 480), text, labelStyle);
+
+        if (GUI.Button(new Rect(area.x + 375, area.yMax - 70, 250, 50), "닫기 (Space)", buttonStyle))
+        {
+            popup = Popup.None;
+        }
+    }
+
     void DrawResult()
     {
         Rect area = new Rect(560, 220, 800, 560);
@@ -1118,7 +1406,51 @@ public class InnGameView : MonoBehaviour
 
         if (GUI.Button(new Rect(area.x + 275, area.yMax - 70, 250, 50), "다시 시작", buttonStyle))
         {
-            StartNewGame();
+            ShowTitle();
+        }
+    }
+
+    void DrawTitleScreen()
+    {
+        GUI.Box(new Rect(0, 0, ReferenceWidth, ReferenceHeight), GUIContent.none);
+        GUI.Label(new Rect(0, 280, ReferenceWidth, 80), "Rest Inn Peace", heroStyle);
+        GUI.Label(new Rect(460, 380, 1000, 40), "인간으로 위장한 괴물들을 찾아내며 여관을 운영한다.", new GUIStyle(labelStyle)
+        {
+            alignment = TextAnchor.MiddleCenter,
+            fontSize = 22
+        });
+
+        if (GUI.Button(new Rect(810, 520, 300, 60), "시작", buttonStyle))
+        {
+            ShowDifficulty();
+        }
+    }
+
+    void DrawDifficultyScreen()
+    {
+        GUI.Box(new Rect(0, 0, ReferenceWidth, ReferenceHeight), GUIContent.none);
+        GUI.Label(new Rect(0, 160, ReferenceWidth, 50), "난이도 선택", new GUIStyle(titleStyle)
+        {
+            alignment = TextAnchor.MiddleCenter,
+            fontSize = 32
+        });
+
+        float y = 280f;
+        foreach (DifficultyConfig config in GameBalance.Difficulties)
+        {
+            Rect button = new Rect(660, y, 600, 70);
+            string label = $"{config.Name}  —  {config.Summary}";
+            if (GUI.Button(button, label, buttonStyle))
+            {
+                StartNewGame(config.Id);
+            }
+
+            y += 90f;
+        }
+
+        if (GUI.Button(new Rect(810, 620, 300, 50), "뒤로", buttonStyle))
+        {
+            ShowTitle();
         }
     }
 

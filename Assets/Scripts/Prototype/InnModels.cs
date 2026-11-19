@@ -4,23 +4,30 @@ public class Guest
 {
     public int Id;
     public Species Species;
-    public Trait Trait;
+    public Job Job;
+    // 직업 주장. 인간은 실제 직업과 같고, 괴물은 거짓일 수 있다.
+    public Job ClaimedJob;
+    // 플레이어가 클릭해 주장을 듣기 전까지는 직업 주장이 숨겨진다.
+    public bool ClaimHeard;
     public int CheckInOrder;
     public bool IsOut;
     public bool HeardHallway;
     public bool HeardScream;
     public bool SurvivedAttack;
-    // 밤에 누군가를 직접 보거나 겪어서 '어젯밤 일'에서 이름을 들어 말할 수 있는 대사.
     public readonly List<string> NightSightings = new List<string>();
-    // 대화는 신뢰 없이 손님 1명당 하루 1회만 할 수 있다.
     public bool TalkedToday;
-    // 집중 심문에서 맞히거나 검증해 특성이 확정되었는지. 확정된 특성은 다시 맞힐 수 없다.
-    public bool TraitKnown;
+    public NightOrder PendingOrder = NightOrder.None;
+    public int OrderRoomNumber;
+    public int OrderGuestId;
+    // 수색·보호 직업이 밤에 알아낸 요약. 아침에 기록으로 붙는다.
+    public readonly List<string> PendingMorningNotes = new List<string>();
     public string Memo = "";
     public readonly List<string> Notes = new List<string>();
+    // NameTable에서 뽑은 표시 이름. 비면 손님 #Id로 떨어진다.
+    public string Name;
 
     public bool IsMonster => Species != Species.Human;
-    public string DisplayName => $"손님 #{Id}";
+    public string DisplayName => string.IsNullOrEmpty(Name) ? $"손님 #{Id}" : Name;
 }
 
 public class Room
@@ -29,9 +36,14 @@ public class Room
     public int Floor;
     public int Column;
     public Guest Guest;
-    public readonly HashSet<Facility> Installed = new HashSet<Facility>();
     public bool HasFur;
     public bool HasSmell;
+    // 전날 밤 열쇠 수리공 등으로 잠긴 방. 낮 방 조사에서 제외된다.
+    public bool DoorLocked;
+    // 청소부가 볼 수 있는 약한 흔적.
+    public bool HasFootprint;
+    // 주인이 이 방을 조사해 내부를 본 적 있는지. 조사 전에는 닫힌 방 외벽만 보인다.
+    public bool Inspected;
 
     public bool IsEmpty => Guest == null;
     public string DisplayName => $"{Number}호실";
@@ -44,6 +56,5 @@ public class MonsterState
     public int Rest;
     public bool Attacked;
     public Guest Target;
-    // 타깃 범위에 인간이 없어 여관 전체에서 타깃을 고른 상태. 다음 1단계에서 범위를 다시 확인한다.
     public bool Rampage;
 }
