@@ -1,0 +1,31 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 802c66f269177ea4fa33b4a318d1f8b8, type: 3}
+  m_Name: DefaultRoomArt
+  m_EditorClassIdentifier: Assembly-CSharp::RoomArtSet
+  Back: {fileID: 21300000, guid: c0e82f296fc8bee4f8203cb64704b3ba, type: 3}
+  Facade: {fileID: 21300000, guid: e4a71c9b2d5f0846a8c3e1f7b0d49265, type: 3}
+  Floor: {fileID: 21300000, guid: db783e6f057871845ad62958d22b9566, type: 3}
+  SideShadow: {fileID: 21300000, guid: 6ee200a50378e4049a41c6ce2d28e0c3, type: 3}
+  Bed: {fileID: 21300000, guid: 7c8cf351251d3a04e988271d92340a44, type: 3}
+  Nightstand: {fileID: 21300000, guid: c1c357f07b12fe540baac81fa5e76afb, type: 3}
+  DoorClosed: {fileID: 21300000, guid: 87d02b80189723b48a6a31453bef1f04, type: 3}
+  DoorOpen: {fileID: 21300000, guid: 9531286ee9323a94295cb66f1c44ff13, type: 3}
+  Lock: {fileID: 21300000, guid: 99be92fa4abf9974898c7d08e99c0766, type: 3}
+  ClueFur: {fileID: 21300000, guid: 519c0f9e7d829214ebba2736b9904181, type: 3}
+  ClueSmell: {fileID: 21300000, guid: 3a1ccfe319384b3498f25a8668601226, type: 3}
+  ClueFootprint: {fileID: 21300000, guid: b1c95b75568ddc34fb7966641cc50df6, type: 3}
+  ClueScratch: {fileID: 21300000, guid: 47d3bee670e01424d9cdb87fc3cd5f10, type: 3}
+  SelectionFrame: {fileID: 21300000, guid: cb99ef916911a5544a46ab98274720bb, type: 3}
+  GuestSilhouette: {fileID: 21300000, guid: d65e40f9e476ce943acbf4f4db566352, type: 3}
+  OwnerDesk: {fileID: 21300000, guid: c48ed9dd5fe361d40bc2a6584e956b9d, type: 3}
+  Corridor: {fileID: 21300000, guid: 930f9f8215acf5e4290a2866f6d24612, type: 3}
